@@ -3,6 +3,8 @@
 
 Uncapsulator provides a fluent API for .NET reflection that lets you easily access private members of an object or type, by employing a dynamic proxy that implements `IDynamicMetaObjectProvider`.
 
+Uncapsulator is also useful when you want to dynamically invoke (public) members of an interface. Ordinary dynamic binding is unreliable in this scenario, because it fails with explicitly implemented interface members. 
+
 Uncapsulator is like [ReflectionMagic](https://github.com/ReflectionMagic/ReflectionMagic) on steroids, and is based on the built-in feature in [LINQPad](http://www.linqpad.net), written by Joseph Albahari.
 
 ## Getting Started
@@ -88,13 +90,13 @@ static void Main()
     // It will also perform overload resolution:
     string result3 = demo.PrivateMethod ("some string");
 
-    // ref and out parameters work just fine:
-    demo.RefMethod (out string s);
+    // ...even with ref and out parameters:
+    demo.PrivateMethod (out string s);
     
-    // as do optional parameters:
+    // Optional parameters are also supported:
     demo.OptionalParamMethod (100);
     
-    // and indexers:
+    // as are indexers:
     string result4 = demo[123]; 
     
     // You can also call generic methods, as long as you're able to specify type parameters:
@@ -107,7 +109,7 @@ class Demo
 
     string PrivateMethod (string s) => "Private method! (string) " + s;
 
-    void RefMethod (out string x) => x = "Passing by reference works!";
+    void PrivateMethod (out string x) => x = "Passing by reference works!";
     
     void OptionalParamMethod (int x = 1, int y = 2, int z = 3)
         => Console.WriteLine (new { x, y, z }));
@@ -135,6 +137,9 @@ static void Main()
 
     // Use the + symbol to denote a nested class:
     string result3 = Uncapsulate ("Demo+NestedPrivate", Assembly.GetExecutingAssembly())._privateField;
+
+    // Or if the containing class is accessible:
+    Uncapsulate<Demo>().NestedPrivate._privateField.Dump();
 }
 
 class Demo
@@ -192,15 +197,28 @@ static void Main()
     int count = new int[123].Uncapsulate().CastTo ("IList`1").Count;
 }
 
-interface ISomeInterface
+interface ISomeInterface       { void Test();                  }
+class Demo : ISomeInterface    { void ISomeInterface.Test() {} }
+```
+
+Uncapsulate() is useful even with public interfaces, as an alternative to C#'s standard dynamic binding. This is because the latter does not let you call explicitly implemented members:
+
+```CSharp
+void Main()
 {
-    void Test();
+
+    dynamic foo = new Demo();
+    try                  { foo.Test();               }
+    catch (Exception ex) { ex.Dump ("Not allowed!"); }
+    
+    // The same thing works nicely with Uncapsulate:
+    var foo2 = new Demo().Uncapsulate();
+    foo2.CastTo<ISomeInterface>().Test();     // Works!	
+    foo2.CastTo("ISomeInterface").Test();     // Works!	
 }
 
-class Demo : ISomeInterface
-{
-    void ISomeInterface.Test() => Console.WriteLine ("Explicitly implemented interface method");
-}
+public interface ISomeInterface       { void Test();                  }
+public class Demo : ISomeInterface    { void ISomeInterface.Test() {} }
 ```
 
 ## Calling members hidden by a subtype
@@ -215,7 +233,7 @@ static void Main()
     string s1 = sub.Uncapsulate()._x;          // "subclass"
     string s2 = sub.Uncapsulate().@base._x;    // "base class"
 
-   	// You can also access the base member with a cast:	
+    // You can also access the base member with a cast:	
     string s3 = sub.Uncapsulate().CastTo ("BaseClass")._x;
 }
 
@@ -258,4 +276,51 @@ class Demo
         static Random _random = new Random();
     }
 }
+```
+
+## Caching
+
+If you repeatedly call the same method with the same argument types, the underlying reflection operations (including overload resolution) are cached.
+    
+This caching works as long as you either re-use the same uncapsulated instance, or call Uncapsulate with useGlobalCache:true.
+
+```CSharp
+Demo demo = new Demo();
+
+void Slow()    // Calling Uncapsulate over and over will clear the cache
+{
+    for (int i = 0; i < 100000; i++)
+        demo.Uncapsulate().SomeMethodCall (i, "test", DateTime.Now);
+}
+
+void Fast()    // Calling Uncapsulate just once means the cache will work
+{
+    var uncap = demo.Uncapsulate();
+    
+    for (int i = 0; i < 100000; i++)
+        uncap.SomeMethodCall (i, "test", DateTime.Now);
+}
+
+void AlsoFast()    // Always caches if you call Uncapsulate(useGlobalCache:true)
+{
+    for (int i = 0; i < 100000; i++)
+        demo.Uncapsulate (true).SomeMethodCall (i, "test", DateTime.Now);
+}
+
+class Demo
+{
+    void SomeMethodCall (int x, string s, DateTime d) { }
+    void SomeMethodCall (string x, string s, DateTime d) { }
+    void SomeMethodCall (char x, string s, DateTime d) { }
+    void SomeMethodCall (int x, string s, TimeSpan ts) { }
+    void SomeMethodCall (bool x, string s, DateTime d) { }
+    void SomeMethodCall<T> (bool x, T s, DateTime d) { }
+    void SomeMethodCall (ref bool x, string s, DateTime d) { }
+}
+```
+
+The static cache can be cleared as follows (to release memory and allow ALCs to unload):
+
+```CSharp
+Uncapsulator.Extensions.ClearCache();
 ```

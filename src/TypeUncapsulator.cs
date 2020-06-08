@@ -19,7 +19,7 @@ namespace Uncapsulator
 		/// <summary>
 		/// Returns a dynamic proxy that lets you access private static members of the type.
 		/// </summary>
-		public static dynamic Uncapsulate (Type type) => new Uncapsulator (null, null, type);
+		public static dynamic Uncapsulate (Type type) => new Uncapsulator (null, null, null, type);
 
 		/// <summary>
 		/// Returns a dynamic proxy that lets you access private static members of the type.

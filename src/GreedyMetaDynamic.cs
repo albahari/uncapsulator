@@ -683,7 +683,7 @@ namespace Uncapsulator
 			{
 				// Convert to GreedyDynamicObject rather than LimitType, because
 				// the limit type might be non-public.
-				if (TypeUtils.AreEquivalent (Expression.Type, typeof (GreedyDynamicObject)))
+				if (TypeUtil.AreEquivalent (Expression.Type, typeof (GreedyDynamicObject)))
 				{
 					return Expression;
 				}
@@ -734,18 +734,6 @@ namespace Uncapsulator
 				}
 				return mod;
 			}
-		}
-	}
-
-	static class TypeUtils
-	{
-		public static bool AreEquivalent (Type t1, Type t2)
-		{
-			if (t1 != null)
-			{
-				return t1.IsEquivalentTo (t2);
-			}
-			return false;
 		}
 	}
 
