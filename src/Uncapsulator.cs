@@ -138,7 +138,7 @@ namespace Uncapsulator
             if (binder.CallInfo.ArgumentNames.Any ())
                 throw new MethodAccessException ("Named arguments are not supported with dynamic method calls.").Wrap ();
 
-            Lazy<Type[]> typeArgs = new Lazy<Type[]> (() => binder.Uncapsulate (useGlobalCache: true).TypeArguments);
+            Lazy<Type[]> typeArgs = new Lazy<Type[]> (() => GetTypeArguments (binder));
 
             if (binder.Name == "ToObject" && args.Length == 0 && typeArgs.Value.Length == 0)
             {
@@ -169,6 +169,26 @@ namespace Uncapsulator
 
             result = new Uncapsulator ($"{_path}.{_type}.{binder.Name}(...)", _options, result);
             return true;
+        }
+
+        public static bool IsFullFramework => System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription.StartsWith (".NET Framework", StringComparison.OrdinalIgnoreCase);
+
+        private Type[] GetTypeArguments(InvokeMemberBinder binder)
+        {
+            var uncap = binder.Uncapsulate (useGlobalCache: true);
+
+            // We are looking at the private members of Microsoft.CSharp.RuntimeBinder.CSharpInvokeMemberBinder, but the implementation differs
+            // between the FullFrameWork vs .NetCore. The former uses List<Type> m_typeArguments whereas the latter uses Type[] TypeArg.
+
+            if (IsFullFramework)
+            {
+                // It is important to cast uncap.m_typeArguments to List<Type> before calling ToArray(), otherwise we will be calling ToArray()
+                // on a dynamic object which means it will call TryInvokeMember recursively and we will end up with a stack overflow.
+                var list = (List<Type>)uncap.m_typeArguments;                
+                return list.ToArray ();
+            }
+            else
+                return (Type[]) uncap.TypeArguments;
         }
 
         bool TryCastTo (InvokeMemberBinder binder, object[] args, Lazy<Type[]> typeArgs, out object result)
