@@ -171,16 +171,16 @@ namespace Uncapsulator
             return true;
         }
 
-        public static bool IsFullFramework => System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription.StartsWith (".NET Framework", StringComparison.OrdinalIgnoreCase);
+        static bool IsDotNetFramework => System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription.StartsWith (".NET Framework", StringComparison.OrdinalIgnoreCase);
 
-        private Type[] GetTypeArguments(InvokeMemberBinder binder)
+        Type[] GetTypeArguments (InvokeMemberBinder binder)
         {
             var uncap = binder.Uncapsulate (useGlobalCache: true);
 
             // We are looking at the private members of Microsoft.CSharp.RuntimeBinder.CSharpInvokeMemberBinder, but the implementation differs
-            // between the FullFrameWork vs .NetCore. The former uses List<Type> m_typeArguments whereas the latter uses Type[] TypeArg.
+            // between .NET Framwork and .NetCore. The former uses List<Type> m_typeArguments whereas the latter uses Type[] TypeArg.
 
-            if (IsFullFramework)
+            if (IsDotNetFramework)
             {
                 // It is important to cast uncap.m_typeArguments to List<Type> before calling ToArray(), otherwise we will be calling ToArray()
                 // on a dynamic object which means it will call TryInvokeMember recursively and we will end up with a stack overflow.
