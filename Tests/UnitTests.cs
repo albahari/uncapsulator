@@ -15,8 +15,12 @@ namespace Tests
 
 		[Fact] void TestPrivateField () => Assert.Equal (123, (int)uncap._private);
 		[Fact] void TestPrivateFieldLongConvert () => Assert.Equal (123, (long)uncap._private);
-		[Fact] void TestPrivateFieldUri () => Assert.Contains ("MustHaveAuthority", ((string)new Uri ("http://www.linqpad.net").Uncapsulate ()._syntax._flags.ToString ()));
-		[Fact] void TestConversion () => Assert.IsAssignableFrom<Exception> ((Exception)uncap._ex);
+#if NETFRAMEWORK
+        [Fact] void TestPrivateFieldUri () => Assert.Contains ("MustHaveAuthority", ((string)new Uri ("http://www.linqpad.net").Uncapsulate ().m_Syntax.m_Flags.ToString ()));
+#else
+        [Fact] void TestPrivateFieldUri () => Assert.Contains ("MustHaveAuthority", ((string)new Uri ("http://www.linqpad.net").Uncapsulate ()._syntax._flags.ToString ()));
+#endif
+        [Fact] void TestConversion () => Assert.IsAssignableFrom<Exception> ((Exception)uncap._ex);
 		[Fact] void TestPrivateFieldSet () { uncap._private = 234; Assert.Equal (234, (int)uncap._private); }
 		[Fact] void TestPrivateMethod () => Assert.Equal ("Private Method", (string)uncap.PrivateMethod ());
 		[Fact] void TestNestedObjectAccess () => Assert.Equal (123, (int)uncap.NestedPrivate.NestedPrivate._private);
