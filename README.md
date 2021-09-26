@@ -1,11 +1,16 @@
 ﻿Uncapsulator
 =============
 
-Uncapsulator provides a fluent API for .NET reflection that lets you easily access private members of an object or type, by employing a dynamic proxy that implements `IDynamicMetaObjectProvider`.
+Uncapsulator provides a fluent API for .NET reflection by employing a dynamic proxy that implements `IDynamicMetaObjectProvider`.
 
-Uncapsulator is also useful when you want to dynamically invoke (public) members of an interface. Ordinary dynamic binding is unreliable in this scenario, because it fails with explicitly implemented interface members. 
+Compared to C#'s standard dynamic language binding, Uncapsulator lets you:
 
-Uncapsulator is like [ReflectionMagic](https://github.com/ReflectionMagic/ReflectionMagic) on steroids, and is based on the built-in feature in [LINQPad](http://www.linqpad.net), written by Joseph Albahari.
+ 1. access private members of an object or type (if you choose)
+ 2. dynamically construct an object (see 'Constructing a new object')
+ 3. dynamically call static members of a type (see 'Static members')
+ 4. dynamically call interface members - even when implemented explicitly (see 'Interfaces and casts').
+
+Uncapsulator is included in [LINQPad](http://www.linqpad.net), written by Joseph Albahari.
 
 ## Getting Started
 
@@ -21,11 +26,8 @@ using static Uncapsulator.TypeUncapsulator
 Then to reflect over an object, call Uncapsulate():
 
 ```csharp
-static void Main()
-{
-    var demo = new Demo();
-    int privateValue = demo.Uncapsulate()._private;
-}
+var demo = new Demo();
+int privateValue = demo.Uncapsulate()._private;
 
 class Demo
 {
@@ -36,11 +38,8 @@ class Demo
 You can keep 'dotting' in to access more private members:
 
 ```csharp
-static void Main()
-{
-    var demo = new Demo();
-    int privateValue = demo.Uncapsulate().SomeProp.SomeMethod()._private;
-}
+var demo = new Demo();
+int privateValue = demo.Uncapsulate().SomeProp.SomeMethod()._private;
 
 class Demo
 {
@@ -50,23 +49,22 @@ class Demo
 }
 ```
 
+If you don't need to access private members, call Uncapsulate with publicMembersOnly:true.
+
 ## Unwrapping the value
 
 In the end, you'll probably need to extract an underlying value.
 You can do so with either an implicit or explicit cast:
 
 ```csharp
-static void Main()
-{
-    var uncap = new Demo().Uncapsulate();
+var uncap = new Demo().Uncapsulate();
     
-    DateTime thisWorks = uncap.Now;             // Implicit cast to DateTime
-    var thisAlsoWorks = (DateTime) uncap.Now;   // Explicit cast to DateTime
+DateTime thisWorks = uncap.Now;             // Implicit cast to DateTime
+var thisAlsoWorks = (DateTime) uncap.Now;   // Explicit cast to DateTime
     
-    // If you don't know the type and just want a System.Object, call .ToObject():
+// If you don't know the type and just want a System.Object, call .ToObject():
     
-    object obj = uncap.Now.ToObject();
-}
+object obj = uncap.Now.ToObject();
 
 class Demo
 {
@@ -78,30 +76,27 @@ class Demo
 Unencapsulator takes care of method overload resolution, numeric conversions, ref/out marshaling, optional parameters, and generic methods:
 
 ```CSharp
-static void Main()
-{
-    // Calling an object's private methods is easy with Uncapsulate():
-    var demo = new Demo().Uncapsulate();
-    string result1 = demo.PrivateMethod (100);
+// Calling an object's private methods is easy with Uncapsulate():
+var demo = new Demo().Uncapsulate();
+string result1 = demo.PrivateMethod (100);
 
-    // The uncapsulator will perform implicit numeric conversions for you automatically:
-    string result2 = demo.PrivateMethod ((byte)100);
+// The uncapsulator will perform implicit numeric conversions for you automatically:
+string result2 = demo.PrivateMethod ((byte)100);
 
-    // It will also perform overload resolution:
-    string result3 = demo.PrivateMethod ("some string");
+// It will also perform overload resolution:
+string result3 = demo.PrivateMethod ("some string");
 
-    // ...even with ref and out parameters:
-    demo.PrivateMethod (out string s);
+// ...even with ref and out parameters:
+demo.PrivateMethod (out string s);
     
-    // Optional parameters are also supported:
-    demo.OptionalParamMethod (100);
+// Optional parameters are also supported:
+demo.OptionalParamMethod (100);
     
-    // as are indexers:
-    string result4 = demo[123]; 
+// as are indexers:
+string result4 = demo[123]; 
     
-    // You can also call generic methods, as long as you're able to specify type parameters:
-    demo.GenericMethod<DateTime>();
-}
+// You can also call generic methods, as long as you're able to specify type parameters:
+demo.GenericMethod<DateTime>();
 
 class Demo
 {
@@ -128,19 +123,16 @@ You can access static members of a type via methods on the TypeEncapsulator clas
 using Uncapsulator;
 using static Uncapsulator.TypeUncapsulator;   // This makes the Uncapsulate function easy to call.
 
-static void Main()
-{
-    string result1 = Uncapsulate<Demo>()._privateField;
+string result1 = Uncapsulate<Demo>()._privateField;
 
-    // If the type that you want to access is private, you can specify the type name as a string:
-    string result2 = Uncapsulate ("Demo", Assembly.GetExecutingAssembly())._privateField;
+// If the type that you want to access is private, you can specify the type name as a string:
+string result2 = Uncapsulate ("Demo", Assembly.GetExecutingAssembly())._privateField;
 
-    // Use the + symbol to denote a nested class:
-    string result3 = Uncapsulate ("Demo+NestedPrivate", Assembly.GetExecutingAssembly())._privateField;
+// Use the + symbol to denote a nested class:
+string result3 = Uncapsulate ("Demo+NestedPrivate", Assembly.GetExecutingAssembly())._privateField;
 
-    // Or if the containing class is accessible:
-    Uncapsulate<Demo>().NestedPrivate._privateField.Dump();
-}
+// Or if the containing class is accessible:
+Uncapsulate<Demo>().NestedPrivate._privateField.Dump();
 
 class Demo
 {
@@ -158,17 +150,14 @@ class Demo
 Constructing a new object is just like calling a static member (see preceding sample) whose name is @new
 
 ```CSharp
-static void Main()
-{
-    Demo myClass = Uncapsulate<Demo>().@new (1);
+Demo myClass = Uncapsulate<Demo>().@new (1);
     
-    // or if the type is inaccessible:
-    var myClass2 = Uncapsulate ("Demo").@new (2);    
+// or if the type is inaccessible:
+var myClass2 = Uncapsulate ("Demo").@new (2);    
     
-    // You can also use @new as an instance method (i.e., on an existing object).
-    // It will then instantiate a new object of the same type.
-    myClass.Uncapsulate().@new (3);
-}
+// You can also use @new as an instance method (i.e., on an existing object).
+// It will then instantiate a new object of the same type.
+myClass.Uncapsulate().@new (3);
 
 class Demo
 {
@@ -180,45 +169,44 @@ class Demo
 
 ## Interfaces and casts
 
- To call an explicitly implemented interface method, first cast to the interface with CastTo()
+Uncapsulate lets you call members of an interface just as you would statically. Even with explicitly implemented members:	
 
 ```CSharp
-static void Main()
+IInterface1 idemo = new Demo();
+idemo.Uncapsulate().Test();                  // Calls IInterface1.Test()
+
+var demo = new Demo();
+((IInterface1) demo).Uncapsulate().Test();   // Calls IInterface1.Test()
+((IInterface2) demo).Uncapsulate().Test();   // Calls IInterface2.Test()
+
+// If the variable you're uncapsulating is not of the interface type, use CastTo:
+new Demo().Uncapsulate().CastTo<IInterface1>().Test();
+
+// OR:
+new Demo().Uncapsulate().CastTo (typeof(IInterface1)).Test();
+
+// You can also specify the interface name as a string (namespace not required).
+// This comes in handy if the interface is not public:
+new Demo().Uncapsulate().CastTo ("IInterface2").Test();
+
+// To specify a generic type, use a backtick followed by the type parameter count:
+new int[123].Uncapsulate().CastTo ("IList`1").Count.Dump();
+
+interface IInterface1 { void Test(); }
+interface IInterface2 { void Test(); }
+
+class Demo : IInterface1, IInterface2
 {
-    new Demo().Uncapsulate().CastTo<ISomeInterface>().Test();
-    
-    // OR:
-    new Demo().Uncapsulate().CastTo (typeof (ISomeInterface)).Test();
-
-    // If the interface is private, specify its name as a string:
-    new Demo().Uncapsulate().CastTo ("ISomeInterface").Test();
-
-    // To cast to a generic type, specify the type name with a backtick:
-    int count = new int[123].Uncapsulate().CastTo ("IList`1").Count;
+    void IInterface1.Test() => "Explicitly implemented interface method 1".Dump();
+    void IInterface2.Test() => "Explicitly implemented interface method 2".Dump();
 }
-
-interface ISomeInterface       { void Test();                  }
-class Demo : ISomeInterface    { void ISomeInterface.Test() {} }
 ```
 
-Uncapsulate() is useful even with public interfaces, as an alternative to C#'s standard dynamic binding. This is because the latter does not let you call explicitly implemented members:
+This is better than C#'s standard dynamic language binding, which does not let you call explicitly implemented members:
 
 ```CSharp
-void Main()
-{
-
-    dynamic foo = new Demo();
-    try                  { foo.Test();               }
-    catch (Exception ex) { ex.Dump ("Not allowed!"); }
-    
-    // The same thing works nicely with Uncapsulate:
-    var foo2 = new Demo().Uncapsulate();
-    foo2.CastTo<ISomeInterface>().Test();     // Works!	
-    foo2.CastTo("ISomeInterface").Test();     // Works!	
-}
-
-public interface ISomeInterface       { void Test();                  }
-public class Demo : ISomeInterface    { void ISomeInterface.Test() {} }
+IInterface1 idemo = new Demo();
+((dynamic)idemo).Test();            // Fails with RuntimeBinderException
 ```
 
 ## Calling members hidden by a subtype
@@ -226,16 +214,13 @@ public class Demo : ISomeInterface    { void ISomeInterface.Test() {} }
 Should a subclass and base class define members with the same name, the subclass will normally "win" and hide the base class's member. To access the base class member, use the special `@base` member:
 
 ```CSharp
-static void Main()
-{    
-    var sub = new SubClass();
+var sub = new SubClass();
         
-    string s1 = sub.Uncapsulate()._x;          // "subclass"
-    string s2 = sub.Uncapsulate().@base._x;    // "base class"
+string s1 = sub.Uncapsulate()._x;          // "subclass"
+string s2 = sub.Uncapsulate().@base._x;    // "base class"
 
-    // You can also access the base member with a cast:	
-    string s3 = sub.Uncapsulate().CastTo ("BaseClass")._x;
-}
+// You can also access the base member with a cast:	
+string s3 = sub.Uncapsulate().CastTo ("BaseClass")._x;
 
 class BaseClass
 {
@@ -253,16 +238,13 @@ class SubClass : BaseClass
 To query a collection of private objects, call ToDynamicSequence() on the collection and assign the result to IEnumerable<dynamic>:
 
 ```CSharp
-static void Main()
-{
-    IEnumerable<dynamic> sequence = new Demo().Uncapsulate().Customers.ToDynamicSequence();
+IEnumerable<dynamic> sequence = new Demo().Uncapsulate().Customers.ToDynamicSequence();
     
-    // Now we have something that we can run LINQ queries over:    
-    var query =
-        from item in sequence
-        orderby (string) item._lastName   // Remember to cast the elements!
-        select item;    
-}
+// Now we have something that we can run LINQ queries over:    
+var query =
+    from item in sequence
+    orderby (string) item._lastName   // Remember to cast the elements!
+    select item;    
 
 class Demo
 {

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Dynamic;
 using System.Linq;
 using System.Reflection;
@@ -40,15 +41,32 @@ namespace Uncapsulator
         /// <summary>
         /// Returns a dynamic proxy that lets you access private members of the object.
         /// </summary>
-        public static dynamic Uncapsulate (this object instance, bool useGlobalCache = false)
+        /// <typeparam name="T">If T is an interface type, Uncapsulate will also look for explicitly implemented members of that interface. If T is not an interface type, T is ignored.</typeparam>
+        /// <param name="instance">The object you wish to uncapsulate.</param>
+        /// <param name="useGlobalCache">True if you want Uncapsulator to cache call-site info in static fields (use ClearCache() to release).</param>
+        /// <param name="publicMembersOnly">True if you don't want to call private members want to use Uncapsulator purely for its dynamic binding abilities.</param>
+        public static dynamic Uncapsulate<T> (this T instance, bool useGlobalCache = false, bool publicMembersOnly = false)
+            => new Uncapsulator (
+                null,
+                new Uncapsulator.UncapsulatorOptions (useGlobalCache, publicMembersOnly),
+                instance,
+                callSiteType: typeof (T));
+
+#if COMPAT_V1
+        /// <summary>
+        /// This overload is included for backward compatibility.
+        /// </summary>
+        [EditorBrowsable (EditorBrowsableState.Never)]
+        public static dynamic Uncapsulate (this object instance, bool useGlobalCache)
             => new Uncapsulator (null, new Uncapsulator.UncapsulatorOptions (useGlobalCache, false), instance);
+#endif
 
         /// <summary>
         /// Clears any type data that was cached statically by virtue of calling Uncapsulate(true)
         /// </summary>
         public static void ClearCache () => Uncapsulator.ClearStaticCache ();
 
-        internal static UncapsulatorException Wrap (this Exception ex) => new UncapsulatorException (ex.Message, ex);
+        internal static UncapsulatorException Wrap (this Exception ex, string msg = null) => new UncapsulatorException (msg ?? ex.Message, ex);
     }
 
     /// <summary>
@@ -73,7 +91,7 @@ namespace Uncapsulator
         Dictionary<object, FieldOrProperty> _fieldAndPropertyCache;
 
         static Func<Type, MemberInfo[]> _globalDefaultMemberCache;
-        MemberInfo[] _defaultMembers;
+        MemberInfo[] _defaultMembers, _defaultMembersForInterfaceCallSite;
 
         static internal void ClearStaticCache ()
         {
@@ -84,7 +102,7 @@ namespace Uncapsulator
 
         readonly string _path;  // This helps to diagnose the source when throwing NullReferenceExceptions
         public object Value { get; private set; }    // This is null when we're uncapsulating a type rather than an instance.
-        readonly Type _type;
+        readonly Type _type, _callSiteInterfaceType;
         readonly UncapsulatorOptions _options;
 
         readonly BindingFlags _instanceFlags = BindingFlags.Instance | BindingFlags.Public;
@@ -108,12 +126,14 @@ namespace Uncapsulator
             throw new TargetException ($"You attempted to {action} on a type; this operation is valid only for instances.").Wrap ();
         }
 
-        internal Uncapsulator (string path, UncapsulatorOptions options, object value)
-            : this (path, options, value, value?.GetType ()) { }
-
-        internal Uncapsulator (string path, UncapsulatorOptions options, object value, Type type)
+        internal Uncapsulator (string path, UncapsulatorOptions options, object value, Type type = null, Type callSiteType = null)
         {
+            if (type == null) type = value?.GetType ();
+
             (_path, _options, Value, _type) = (path, options ?? UncapsulatorOptions.Default, value, type);
+
+            // We're not interested in the call site type unless it's an interface, in which case it may be essential in finding the right member.
+            _callSiteInterfaceType = value == null || callSiteType == null || callSiteType == _type || !callSiteType.IsInterface ? null : callSiteType;
 
             if (!_options.PublicOnly)
             {
@@ -146,17 +166,15 @@ namespace Uncapsulator
                 return true;
             }
 
-            if (binder.Name == "GetType" && args.Length == 0 && typeArgs.Value.Length == 0)
-            {
-                result = new Uncapsulator (_path + ".GetType()", _options, _type);
-                return true;
-            }
+            if (TryCastTo (binder, args, typeArgs, out result)) return true;
 
             if (WrapsNullInstance) ThrowNullException ($"call method '{binder.Name}'");
 
-            if (TryCastTo (binder, args, typeArgs, out result) ||
-                TryToDynamicSequence (binder, args, typeArgs, out result))
+            if (TryToDynamicSequence (binder, args, typeArgs, out result)) return true;
+
+            if (binder.Name == "GetType" && args.Length == 0 && typeArgs.Value.Length == 0)
             {
+                result = new Uncapsulator (_path + ".GetType()", _options, Value?.GetType ());
                 return true;
             }
 
@@ -164,10 +182,10 @@ namespace Uncapsulator
             // to happen is that the TryGetMember method will get invoked (which could match to a field or property that
             // returns a delegate that could subsequently be invoked).
 
-            if (!InvokeCore (binder.Name, args, typeArgs.Value, paramModifier, out result))
+            if (!InvokeCore (binder.Name, args, typeArgs.Value, paramModifier, out result, out var callSiteReturnType))
                 return false;
 
-            result = new Uncapsulator ($"{_path}.{_type}.{binder.Name}(...)", _options, result);
+            result = new Uncapsulator ($"{_path}.{_type}.{binder.Name}(...)", _options, result, callSiteType: callSiteReturnType);
             return true;
         }
 
@@ -184,45 +202,64 @@ namespace Uncapsulator
             {
                 // It is important to cast uncap.m_typeArguments to List<Type> before calling ToArray(), otherwise we will be calling ToArray()
                 // on a dynamic object which means it will call TryInvokeMember recursively and we will end up with a stack overflow.
-                var list = (List<Type>)uncap.m_typeArguments;                
+                var list = (List<Type>)uncap.m_typeArguments;
                 return list.ToArray ();
             }
             else
-                return (Type[]) uncap.TypeArguments;
+                return (Type[])uncap.TypeArguments;
         }
 
         bool TryCastTo (InvokeMemberBinder binder, object[] args, Lazy<Type[]> typeArgs, out object result)
         {
             result = null;
-            if (binder.Name != "CastTo" || WrapsType) return false;
+            if (WrapsType) return false;
 
-            if (typeArgs.Value.Length == 0 && args.Length == 1 && args[0] is string typeName)    // CastTo(string typeName)
+            bool castTo = binder.Name == "CastTo";
+            bool asType = binder.Name == "AsType";
+            if (!castTo && !asType) return false;
+
+            if (WrapsNullInstance)
             {
-                string newPath = _path + $".CastTo({typeName})";
+                if (castTo) ThrowNullException ("call CastTo");
+                result = new Uncapsulator (_path + "AsType()", _options, null, null);
+                return true;
+            }
+
+            Type fromType = Value?.GetType () ?? _type;
+
+            if (typeArgs.Value.Length == 0 && args.Length == 1 && args[0] is string typeName)    // CastTo/AsType (string typeName)
+            {
+                string newPath = _path + $".{binder.Name}({typeName})";
 
                 var newType =
-                    Value.GetType ().GetInterface (typeName) ??      // Try first to find an interface
-                    GetTypeHierarchy (Value?.GetType () ?? _type)
+                    (fromType).GetInterface (typeName) ??      // Try first to find an interface
+                    GetTypeHierarchy (fromType)
                         .Select (t => t.IsConstructedGenericType ? t.GetGenericTypeDefinition () : t)
                         .FirstOrDefault (t => t.Name == typeName || t.FullName == typeName);
 
                 if (newType == null)
-                    throw new InvalidCastException ($"Error calling CastTo: '{typeName}' is not a base class or interface of '{Value.GetType ()}'. Specify generic types with backticks, e.g., 'List`1' or 'IList`1'. A namespace is not required.")
-                        .Wrap ();
+                    if (asType)
+                        return true;
+                    else
+                        throw new InvalidCastException ($"Error calling {binder.Name}: '{typeName}' is not a base class or interface of '{fromType}'. Specify generic types with backticks, e.g., 'List`1' or 'IList`1'. A namespace is not required.")
+                            .Wrap ();
 
                 result = new Uncapsulator (newPath, _options, Value, newType);
                 return true;
             }
 
-            if (typeArgs.Value.Length == 1 && args.Length == 0 ||                         // CastTo<T>()
-                typeArgs.Value.Length == 0 && args.Length == 1 && args[0] is Type)        // CastTo(Type typeName)   
+            if (typeArgs.Value.Length == 1 && args.Length == 0 ||                         // CastTo/AsType<T>()
+                typeArgs.Value.Length == 0 && args.Length == 1 && args[0] is Type)        // CastTo/AsType (Type typeName)   
             {
                 Type newType = typeArgs.Value.Length == 1 ? typeArgs.Value[0] : (Type)args[0];
 
-                if (!newType.IsAssignableFrom (Value.GetType ()))
-                    throw new InvalidCastException ($"Cannot cast from type {Value.GetType ()} to {newType}.").Wrap ();
+                if (!newType.IsAssignableFrom (fromType))
+                    if (asType)
+                        return true;
+                    else
+                        throw new InvalidCastException ($"Cannot cast from type {fromType} to {newType}.").Wrap ();
 
-                result = new Uncapsulator (_path + $".CastTo({newType.Name})", _options, Value, newType);
+                result = new Uncapsulator (_path + $".{binder.Name}({newType.Name})", _options, Value, newType);
                 return true;
             }
 
@@ -248,37 +285,29 @@ namespace Uncapsulator
             }
         }
 
-        bool InvokeCore (string memberName, object[] args, Type[] typeArgs, ParameterModifier parameterModifiers, out object result)
+        bool InvokeCore (string memberName, object[] args, Type[] typeArgs, ParameterModifier parameterModifiers, out object result, out Type callSiteType)
         {
             if (memberName == "new")
             {
                 result = Activator.CreateInstance (_type, _instanceFlags, null, args, null);
+                callSiteType = null;
                 return true;
             }
 
             var originalArgs = args;
 
-            InvocationCacheKey cacheKey = _options.UseGlobalCache
-                ? new GlobalInvocationCacheKey { Type = _type, BindingFlags = _defaultBindingFlags }
-                : new InvocationCacheKey ();
-
-            cacheKey.Name = memberName;
-            cacheKey.TypeArgs = typeArgs;
-            cacheKey.ParamTypes = new Type[args.Length];
-            cacheKey.ParamModifiers = parameterModifiers;
-            for (int i = 0; i < args.Length; i++) cacheKey.ParamTypes[i] = args[i]?.GetType ();
-
-            var cache = _options.UseGlobalCache
-                ? _globalBindToMethodCache
-                : (_bindToMethodCache ?? (_bindToMethodCache = new Dictionary<object, (MethodBase method, bool fieldOrProp)> ()));
-
-            if (!TryGetValueWithLock (cache, cacheKey, out var bindingResult))
+            // First try with the interface type if present
+            var bindingResult = _callSiteInterfaceType == null ? default : GetBindingResult (_callSiteInterfaceType, false);
+            if (bindingResult.method == null)
             {
-                bindingResult = BindToMethod (_type, memberName, _defaultBindingFlags, typeArgs, parameterModifiers, ref args);
-                // We can't cache the result with optional parameters because the binding applies the defaults.
-                if (originalArgs.Length == args.Length)
-                    lock (cache)
-                        cache[cacheKey] = bindingResult;
+                if (bindingResult.fieldOrProp)
+                {
+                    result = null;
+                    callSiteType = null;
+                    return false;
+                }
+                // Try again with the normal type
+                bindingResult = GetBindingResult (_type, true);
             }
 
             if (bindingResult.method == null)
@@ -286,6 +315,7 @@ namespace Uncapsulator
                 if (bindingResult.fieldOrProp)
                 {
                     result = null;
+                    callSiteType = null;
                     return false;
                 }
                 if (GetTypeHierarchy (_type).SelectMany (t => t.GetMember (memberName, MemberTypes.Method, _defaultBindingFlags)).Any ())
@@ -302,10 +332,39 @@ namespace Uncapsulator
                 for (int i = 0; i < originalArgs.Length; i++)
                     originalArgs[i] = args[i];
 
+            callSiteType = bindingResult.method is MethodInfo mi ? mi.ReturnType : null;
             return true;
+
+            (MethodBase method, bool fieldOrProp) GetBindingResult (Type type, bool throwOnBadMethodOverload)
+            {
+                InvocationCacheKey cacheKey = _options.UseGlobalCache
+                    ? new GlobalInvocationCacheKey { Type = type, BindingFlags = _defaultBindingFlags }
+                    : new InvocationCacheKey { IsCallSiteInterfaceType = (type == _callSiteInterfaceType) };
+
+                cacheKey.Name = memberName;
+                cacheKey.TypeArgs = typeArgs;
+                cacheKey.ParamTypes = new Type[args.Length];
+                cacheKey.ParamModifiers = parameterModifiers;
+                for (int i = 0; i < args.Length; i++) cacheKey.ParamTypes[i] = args[i]?.GetType ();
+
+                var cache = _options.UseGlobalCache
+                    ? _globalBindToMethodCache
+                    : (_bindToMethodCache ?? (_bindToMethodCache = new Dictionary<object, (MethodBase method, bool fieldOrProp)> ()));
+
+                if (!TryGetValueWithLock (cache, cacheKey, out var br))
+                {
+                    br = BindToMethod (type, memberName, _defaultBindingFlags, typeArgs, parameterModifiers, throwOnBadMethodOverload, ref args);
+                    // We can't cache the result with optional parameters because the binding applies the defaults.
+                    if (originalArgs.Length == args.Length)
+                        lock (cache)
+                            cache[cacheKey] = br;
+                }
+                return br;
+            }
         }
 
-        (MethodBase method, bool boundToFieldOrProp) BindToMethod (Type type, string memberName, BindingFlags bindingFlags, Type[] typeArgs, ParameterModifier parameterModifiers, ref object[] args)
+        (MethodBase method, bool boundToFieldOrProp) BindToMethod (Type type, string memberName, BindingFlags bindingFlags, Type[] typeArgs,
+                                                                   ParameterModifier parameterModifiers, bool throwOnBadMethodOverload, ref object[] args)
         {
             int argCount = args.Length;
             var args2 = args;
@@ -347,7 +406,8 @@ namespace Uncapsulator
                 }
                 catch (MissingMethodException ex)
                 {
-                    throw ex.Wrap ();
+                    if (!throwOnBadMethodOverload) return null;
+                    throw ex.Wrap ($"Error binding type '{t}' to method '{memberName}'");
                 }
             }
 
@@ -366,6 +426,14 @@ namespace Uncapsulator
             }
         }
 
+        FieldOrProperty GetFieldOrProperty (string name, BindingFlags bindingFlags)
+        {
+            var result = _callSiteInterfaceType == null ? default : GetFieldOrProperty (_callSiteInterfaceType, name, bindingFlags, false);
+            if (result?.MemberInfo != null) return result;
+
+            return GetFieldOrProperty (_type, name, bindingFlags, true);
+        }
+
         FieldOrProperty GetFieldOrProperty (Type type, string name, BindingFlags bindingFlags, bool throwIfNotFound)
         {
             var cache = _options.UseGlobalCache
@@ -374,7 +442,7 @@ namespace Uncapsulator
 
             object cacheKey = _options.UseGlobalCache
                 ? (object)new GlobalFieldPropertyCacheKey { Type = type, Name = name, BindingFlags = bindingFlags }
-                : name;
+                : (type == _type) + name;   // type may be _type or _callSiteInterfaceType
 
             if (!TryGetValueWithLock (cache, cacheKey, out var result))
             {
@@ -421,10 +489,10 @@ namespace Uncapsulator
 
             if (WrapsNullInstance) ThrowNullException ($"get member '{binder.Name}'");
 
-            var member = GetFieldOrProperty (_type, binder.Name, _defaultBindingFlags, true);
+            var member = GetFieldOrProperty (binder.Name, _defaultBindingFlags);
             var returnValue = member.GetValue (Value);
 
-            result = new Uncapsulator (_path + "." + binder.Name, _options, returnValue);
+            result = new Uncapsulator (_path + "." + binder.Name, _options, returnValue, callSiteType: member.ReturnType);
             return true;
         }
 
@@ -432,7 +500,7 @@ namespace Uncapsulator
         {
             if (WrapsNullInstance) ThrowNullException ($"set member '{binder.Name}'");
             if (value is Uncapsulator uc) value = uc.Value;
-            var member = GetFieldOrProperty (_type, binder.Name, _defaultBindingFlags, true);
+            var member = GetFieldOrProperty (binder.Name, _defaultBindingFlags);
             member.SetValue (Value, value);
 
             return true;
@@ -450,7 +518,11 @@ namespace Uncapsulator
                 if (_type.IsArray && indexes.All (x => x is int))
                     result = new Uncapsulator (newParent, _options, ((Array)Value).GetValue (indexes.Select (x => (int)x).ToArray ()));
                 else
-                    result = new Uncapsulator (newParent, _options, SelectIndexer (indexes).GetValue (Value, _instanceFlags, null, indexes, null));
+                {
+                    var indexer = SelectIndexer (indexes);
+                    var returnValue = indexer.GetValue (Value, _instanceFlags, null, indexes, null);
+                    result = new Uncapsulator (newParent, _options, returnValue, callSiteType: indexer.PropertyType);
+                }
             }
             catch (Exception ex)
             {
@@ -481,36 +553,55 @@ namespace Uncapsulator
 
         PropertyInfo SelectIndexer (object[] indexValues, Type returnType = null)
         {
-            var props = GetDefaultMembers ()
-                .OfType<PropertyInfo> ()
-                .Where (p => p.GetIndexParameters ().Length == indexValues.Length)
-                .ToArray ();
+            // Try first with interface type if present.
+            var match = _callSiteInterfaceType == null ? default : SelectIndexer (_callSiteInterfaceType, false);
+            if (match != null) return match;
 
-            if (props.Length == 0) throw new MissingMemberException ($"There are no indexers on type {_type}.").Wrap ();
+            return SelectIndexer (_type, true);
 
-            if (indexValues.Any (x => x == null))
+            PropertyInfo SelectIndexer (Type type, bool throwIfNotFound)
             {
-                var eligibleProps = props.Where (i => i.GetIndexParameters ().All (p => !p.ParameterType.IsValueType)).ToArray ();
-                if (eligibleProps.Length == 1) return eligibleProps[0];
-                if (eligibleProps.Length > 1)
-                    throw new AmbiguousMatchException ($"Call to indexer on '{_path}' is ambiguous because one or more arguments is null.").Wrap ();
-                else
-                    throw new MissingMemberException ($"Cannot find a compatible indexer on type '{_type}'.").Wrap ();
-            }
+                var props = GetDefaultMembers (type)
+                    .OfType<PropertyInfo> ()
+                    .Where (p => p.GetIndexParameters ().Length == indexValues.Length)
+                    .ToArray ();
 
-            var result = Type.DefaultBinder.SelectProperty (_defaultBindingFlags, props, returnType, indexValues.Select (i => i.GetType ()).ToArray (), null);
-            if (result == null) throw new MissingMemberException ($"Cannot find a compatible indexer on type '{_type}'.").Wrap ();
-            return result;
+                if (props.Length == 0)
+                    if (throwIfNotFound)
+                        throw new MissingMemberException ($"There are no indexers on type {type}.").Wrap ();
+                    else
+                        return null;
+
+                if (indexValues.Any (x => x == null))
+                {
+                    var eligibleProps = props.Where (i => i.GetIndexParameters ().All (p => !p.ParameterType.IsValueType)).ToArray ();
+                    if (eligibleProps.Length == 1) return eligibleProps[0];
+
+                    if (eligibleProps.Length > 1)
+                        throw new AmbiguousMatchException ($"Call to indexer on '{_path}' is ambiguous because one or more arguments is null.").Wrap ();
+                    else if (throwIfNotFound)
+                        throw new MissingMemberException ($"Cannot find a compatible indexer on type '{type}'.").Wrap ();
+                    else
+                        return null;
+                }
+
+                var result = Type.DefaultBinder.SelectProperty (_defaultBindingFlags, props, returnType, indexValues.Select (i => i.GetType ()).ToArray (), null);
+                if (result == null && throwIfNotFound) throw new MissingMemberException ($"Cannot find a compatible indexer on type '{type}'.").Wrap ();
+                return result;
+            }
         }
 
-        MemberInfo[] GetDefaultMembers ()
+        MemberInfo[] GetDefaultMembers (Type type)
         {
             if (_options.UseGlobalCache)
             {
                 var cache = _globalDefaultMemberCache ?? (_globalDefaultMemberCache = Memoizer.Memoize<Type, MemberInfo[]> (GetDefaultMembersCore));
-                return cache (_type);
+                return cache (type);
             }
-            return _defaultMembers ?? (_defaultMembers = GetDefaultMembersCore (_type));
+            if (type == _callSiteInterfaceType)
+                return _defaultMembersForInterfaceCallSite ?? (_defaultMembersForInterfaceCallSite = GetDefaultMembersCore (type));
+            else
+                return _defaultMembers ?? (_defaultMembers = GetDefaultMembersCore (type));
         }
 
         static MemberInfo[] GetDefaultMembersCore (Type type)
@@ -567,10 +658,10 @@ namespace Uncapsulator
             if (WrapsNullInstance) ThrowNullException ($"invoke");
             UnwrapArgs (args);
 
-            if (!InvokeCore ("Invoke", args, new Type[0], new ParameterModifier (Math.Max (1, args.Length)), out result))
+            if (!InvokeCore ("Invoke", args, new Type[0], new ParameterModifier (Math.Max (1, args.Length)), out result, out var callSiteReturnType))
                 throw new MissingMethodException ($"Unable to invoke '{_path}'.").Wrap ();
 
-            result = new Uncapsulator (_path + "()", _options, result);
+            result = new Uncapsulator (_path + "()", _options, result, callSiteType: callSiteReturnType);
             return true;
         }
 
@@ -609,6 +700,7 @@ namespace Uncapsulator
             public string Name;
             public Type[] TypeArgs, ParamTypes;
             public ParameterModifier ParamModifiers;
+            public bool IsCallSiteInterfaceType;
 
             public override bool Equals (object obj) => Equals (obj as InvocationCacheKey);
 
@@ -616,6 +708,7 @@ namespace Uncapsulator
             {
                 if (other == null) return false;
                 if (Name != other.Name) return false;
+                if (IsCallSiteInterfaceType != other.IsCallSiteInterfaceType) return false;
                 if (ParamTypes.Length != other.ParamTypes.Length) return false;
                 for (int i = 0; i < ParamTypes.Length; i++)
                     if (ParamTypes[i] != other.ParamTypes[i])
@@ -676,7 +769,8 @@ namespace Uncapsulator
                 {
                     if (MemberInfo is FieldInfo fi && fi.IsStatic)
                         return fi.GetValue (null);
-                    else if (MemberInfo is PropertyInfo pi && (pi.GetMethod?.IsStatic ?? true))
+                    // In .NET Framework, we get a TypeAccessException when trying to access this via Reflection.Emit
+                    else if (MemberInfo is PropertyInfo pi && ((pi.GetMethod?.IsStatic ?? true) || IsDotNetFramework && pi.DeclaringType.IsInterface))
                         return pi.GetValue (instance, null);
                     else
                         // Optimize the common case of getting a field or property.
@@ -694,6 +788,8 @@ namespace Uncapsulator
                 else
                     ((PropertyInfo)MemberInfo).SetValue (instance, value);
             }
+
+            public Type ReturnType => MemberInfo is FieldInfo fi ? fi.FieldType : MemberInfo is PropertyInfo pi ? pi.PropertyType : null;
         }
 
         // This method is to allow the same code to compile in LINQPad and support native Dump calls:

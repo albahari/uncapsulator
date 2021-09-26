@@ -10,7 +10,11 @@ namespace Tests
 {
 	public class UnitTests
 	{
-		dynamic uncap = new Demo ().Uncapsulate ();
+        static void Main ()
+        {
+        }
+
+        dynamic uncap = new Demo ().Uncapsulate ();
 		dynamic uncapStatic = Uncapsulate<Demo> ();
 
 		[Fact] void TestPrivateField () => Assert.Equal (123, (int)uncap._private);
@@ -58,13 +62,38 @@ namespace Tests
 		[Fact] void TestCastToBase1 () => Assert.Equal (1, (int)uncap.CastTo ("Super")._private);
 		[Fact] void TestCastToBase2 () => Assert.Equal (1, (int)uncap.CastTo<Super> ()._private);
 
-		[Fact] void TestConstructor () => Assert.Equal (123, (int)Uncapsulate<Demo> ().@new (123)._private);
+        [Fact] void TestStaticCastToBase1 () => Assert.Equal ("Demo", (string)uncapStatic.HiddenStaticField);
+        [Fact] void TestStaticCastToBase2 () => Assert.Equal ("Super", (string)uncapStatic.@base.HiddenStaticField);
 
-		[Fact] void TestToDynamicSequence () => Assert.Equal (4, ((IEnumerable<dynamic>)uncap._sequence.ToDynamicSequence ()).Sum (item => (int)item.Y));
+        [Fact] void TestInterfaceWithoutCast () => Assert.Equal ("OK", (string)((IFoo)new Foo ()).Uncapsulate ().Other.ExplicitlyImplementedMethod ());
+
+        [Fact] void TestConstructor () => Assert.Equal (123, (int)Uncapsulate<Demo> ().@new (123)._private);
+
+        [Fact] void TestVirtualMethod () => Assert.Equal ("Demo", (string)uncap.ClassName);
+
+        [Fact] void TestToDynamicSequence () => Assert.Equal (4, ((IEnumerable<dynamic>)uncap._sequence.ToDynamicSequence ()).Sum (item => (int)item.Y));
 		[Fact] void TestToNonDynamicSequence () => Assert.Throws<UncapsulatorException> (() => uncap._private.ToDynamicSequence ());
 
-		class Super { int _private = 1; }
-		class Demo : Super
+        interface IFoo
+        {
+            string ExplicitlyImplementedMethod ();
+            IFoo Other { get; }
+        }
+
+        class Foo : IFoo
+        {
+            string IFoo.ExplicitlyImplementedMethod () => "OK";
+            IFoo IFoo.Other => new Foo ();
+        }
+
+        class Super
+        {
+            int _private = 1;
+            public virtual string ClassName => "Super";
+            public static string HiddenStaticField = "Super";
+        }
+
+        class Demo : Super
 		{
 			int _private = 123;
 			ArgumentException _ex = new ArgumentException ("test");
@@ -80,15 +109,17 @@ namespace Tests
 			static string PrivateStatic () => "Private Static";
 			public static string PublicStaticProp => "Static Property";
 			static string PrivateStaticField = "Static Field";
-			void RefTest (ref int x) => x *= 2;
+            public static new string HiddenStaticField = "Demo";
+            void RefTest (ref int x) => x *= 2;
 			void OutTest (out string s) => s = "OutTest";
 			void OutTestGeneric<T> (out T x) where T : new() => x = new T ();
 			string Optional (int x, string y = "optional") => x + y;
 			string OptionalRef (ref int x, string y = "optional") => (x = 234) + y;
 			object ManyOptional (int a = 1, int b = 2, int c = 3) => new { a, b, c };
 			Func<string, string> TestFunc = s => s;
+            public override string ClassName => "Demo";
 
-			int this[int x]
+            int this[int x]
 			{
 				get => x;
 				set => _private = x + value;
